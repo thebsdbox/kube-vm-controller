@@ -1,0 +1,49 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kube-vm-scheduler
+  namespace: kube-vm-system
+  labels:
+    app.kubernetes.io/name: kube-vm-controller
+    app.kubernetes.io/component: scheduler
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: kube-vm-controller
+      app.kubernetes.io/component: scheduler
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: kube-vm-controller
+        app.kubernetes.io/component: scheduler
+    spec:
+      serviceAccountName: kube-vm-scheduler
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+      - name: manager
+        image: ghcr.io/thebsdbox/kube-vm-controller:latest
+        args:
+        - --scheduler
+        - --leader-elect
+        - --leader-election-namespace=kube-vm-system
+        - --agent-namespace=kube-vm-system
+        - --agent-selector=app.kubernetes.io/component=agent
+        ports:
+        - {name: metrics, containerPort: 8080}
+        - {name: probes, containerPort: 8081}
+        livenessProbe:
+          httpGet: {path: /healthz, port: probes}
+        readinessProbe:
+          httpGet: {path: /readyz, port: probes}
+        resources:
+          requests: {cpu: 50m, memory: 64Mi}
+          limits: {memory: 256Mi}
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop: [ALL]

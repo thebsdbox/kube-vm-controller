@@ -1,0 +1,59 @@
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: kube-vm-agent
+  namespace: kube-vm-system
+  labels:
+    app.kubernetes.io/name: kube-vm-controller
+    app.kubernetes.io/component: agent
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: kube-vm-controller
+      app.kubernetes.io/component: agent
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: kube-vm-controller
+        app.kubernetes.io/component: agent
+    spec:
+      serviceAccountName: kube-vm-agent
+      # Only nodes labelled kube-vm.io/enabled=true (and running `kube-vm --server`) host VMs.
+      nodeSelector:
+        kube-vm.io/enabled: "true"
+      containers:
+      - name: agent
+        image: ghcr.io/thebsdbox/kube-vm-controller:latest
+        args:
+        - --agent
+        - --kube-vm-socket=/run/kube-vm/control.sock
+        env:
+        - name: NODE_NAME
+          valueFrom:
+            fieldRef: {fieldPath: spec.nodeName}
+        ports:
+        - {name: metrics, containerPort: 8080}
+        - {name: probes, containerPort: 8081}
+        livenessProbe:
+          httpGet: {path: /healthz, port: probes}
+        # Ready only while the node's kube-vm daemon answers on its control socket.
+        readinessProbe:
+          httpGet: {path: /readyz, port: probes}
+          periodSeconds: 10
+        resources:
+          requests: {cpu: 50m, memory: 64Mi}
+          limits: {memory: 256Mi}
+        # The control socket is root-owned (0660), so the agent must run as root.
+        securityContext:
+          runAsUser: 0
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop: [ALL]
+        volumeMounts:
+        - {name: kube-vm-run, mountPath: /run/kube-vm}
+      volumes:
+      - name: kube-vm-run
+        hostPath:
+          path: /run/kube-vm
+          type: Directory

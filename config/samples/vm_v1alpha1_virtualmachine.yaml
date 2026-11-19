@@ -1,0 +1,61 @@
+# A minimal VM: boots a kernel from the node and gives the guest NAT networking.
+apiVersion: vm.kube-vm.io/v1alpha1
+kind: VirtualMachine
+metadata:
+  name: minimal
+spec:
+  cpus: 2
+  memoryMiB: 1024
+  boot:
+    kernel: /var/lib/kube-vm/kernels/bzImage
+    cmdline: "console=hvc0 root=/dev/vda reboot=t"
+  disks:
+  - path: /var/lib/kube-vm/images/alpine.img
+    overlay: /var/lib/kube-vm/overlays/minimal.qcow2
+  network:
+  - type: NAT
+---
+# A VM cloned from a node's base-disk catalog, provisioned on first boot, with
+# idle auto-pause. The generated SSH key pair lands in Secret "provisioned-ssh".
+apiVersion: v1
+kind: Secret
+metadata:
+  name: provisioned-token
+stringData:
+  token: change-me
+---
+apiVersion: vm.kube-vm.io/v1alpha1
+kind: VirtualMachine
+metadata:
+  name: provisioned
+spec:
+  nodeSelector:
+    kubernetes.io/arch: amd64
+  runStrategy: Always
+  updateStrategy: Restart
+  cpus: 2
+  memoryMiB: 2048
+  memoryBalancing:
+    minMiB: 512
+  boot:
+    kernel: /var/lib/kube-vm/kernels/bzImage
+  disks:
+  - baseDisk: ubuntu
+  network:
+  - type: NAT
+  idle:
+    pauseAfter: 5m
+    diskPauseAfter: 1h
+    wakeOnNetwork: true
+  provisioning:
+    ssh:
+      user: ubuntu
+    files:
+    - path: /etc/motd
+      content: "Managed by kube-vm-controller\n"
+      mode: "0644"
+    - path: /etc/app/token
+      mode: "0600"
+      secretKeyRef:
+        name: provisioned-token
+        key: token

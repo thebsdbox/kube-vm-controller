@@ -1,0 +1,113 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: kube-vm-system
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: kube-vm-scheduler
+  namespace: kube-vm-system
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: kube-vm-agent
+  namespace: kube-vm-system
+---
+# Scheduler: reads VMs, nodes and agent pods; writes VM status only.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: kube-vm-scheduler
+rules:
+- apiGroups: [vm.kube-vm.io]
+  resources: [virtualmachines]
+  verbs: [get, list, watch]
+- apiGroups: [vm.kube-vm.io]
+  resources: [virtualmachines/status]
+  verbs: [get, update, patch]
+- apiGroups: [""]
+  resources: [nodes]
+  verbs: [get, list, watch]
+- apiGroups: [""]
+  resources: [events]
+  verbs: [create, patch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: kube-vm-scheduler
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: kube-vm-scheduler
+subjects:
+- kind: ServiceAccount
+  name: kube-vm-scheduler
+  namespace: kube-vm-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: kube-vm-scheduler
+  namespace: kube-vm-system
+rules:
+- apiGroups: [""]
+  resources: [pods]
+  verbs: [get, list, watch]
+- apiGroups: [coordination.k8s.io]
+  resources: [leases]
+  verbs: [get, list, watch, create, update, patch, delete]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: kube-vm-scheduler
+  namespace: kube-vm-system
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: kube-vm-scheduler
+subjects:
+- kind: ServiceAccount
+  name: kube-vm-scheduler
+  namespace: kube-vm-system
+---
+# Agent: manages VM lifecycle, finalizers, and the generated SSH Secrets.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: kube-vm-agent
+rules:
+- apiGroups: [vm.kube-vm.io]
+  resources: [virtualmachines]
+  verbs: [get, list, watch, update, patch]
+- apiGroups: [vm.kube-vm.io]
+  resources: [virtualmachines/status]
+  verbs: [get, update, patch]
+- apiGroups: [vm.kube-vm.io]
+  resources: [virtualmachines/finalizers]
+  verbs: [update]
+- apiGroups: [""]
+  resources: [secrets]
+  verbs: [get, create, update, patch]
+- apiGroups: [""]
+  resources: [configmaps]
+  verbs: [get]
+- apiGroups: [""]
+  resources: [events]
+  verbs: [create, patch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: kube-vm-agent
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: kube-vm-agent
+subjects:
+- kind: ServiceAccount
+  name: kube-vm-agent
+  namespace: kube-vm-system
