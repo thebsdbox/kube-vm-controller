@@ -1,0 +1,36 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+# Deploys the controller with a fake kube-vm daemon next to each agent, so the
+# whole control loop can be exercised on clusters without KVM (for example kind).
+resources:
+- ../default
+images:
+- name: ghcr.io/thebsdbox/kube-vm-controller
+  newName: kube-vm-controller
+  newTag: e2e
+patches:
+- target:
+    kind: DaemonSet
+    name: kube-vm-agent
+  patch: |-
+    - op: replace
+      path: /spec/template/spec/volumes/0
+      value:
+        name: kube-vm-run
+        emptyDir: {}
+    - op: add
+      path: /spec/template/spec/containers/-
+      value:
+        name: fake-daemon
+        image: ghcr.io/thebsdbox/kube-vm-controller:latest
+        command: ["/fake-daemon"]
+        args: ["--socket=/run/kube-vm/control.sock"]
+        securityContext:
+          runAsUser: 0
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop: [ALL]
+        volumeMounts:
+        - name: kube-vm-run
+          mountPath: /run/kube-vm
