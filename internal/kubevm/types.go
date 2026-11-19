@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"time"
+
+	"github.com/thebsdbox/kube-vm-controller/internal/podnetwork"
 )
 
 // DefaultSocket is where `kube-vm --server` listens.
@@ -61,22 +63,23 @@ type NetworkInterface struct {
 
 // VMDetails is the subset of the daemon's examine output the controller uses.
 type VMDetails struct {
-	UID                 string             `json:"uid,omitempty"`
-	State               string             `json:"state,omitempty"`
-	StartedAt           string             `json:"started_at,omitempty"`
-	MemMiB              int                `json:"mem_mib,omitempty"`
-	NumCPU              int                `json:"num_cpu,omitempty"`
-	ActivityTimeout     string             `json:"activity_timeout,omitempty"`
-	ActivityDiskTimeout string             `json:"activity_disk_timeout,omitempty"`
-	WakeOnNetwork       bool               `json:"wake_on_network"`
-	NAT                 bool               `json:"nat,omitempty"`
-	NATGateway          string             `json:"nat_gateway,omitempty"`
-	NATGuestIP          string             `json:"nat_guest_ip,omitempty"`
-	NetworkInterfaces   []NetworkInterface `json:"network_interfaces,omitempty"`
-	SSHPrivateKey       string             `json:"ssh_private_key,omitempty"`
-	SSHPublicKey        string             `json:"ssh_public_key,omitempty"`
-	SSHUser             string             `json:"ssh_user,omitempty"`
-	LastError           string             `json:"last_error,omitempty"`
+	PodNetwork          *podnetwork.Identity `json:"pod_network,omitempty"`
+	UID                 string               `json:"uid,omitempty"`
+	State               string               `json:"state,omitempty"`
+	StartedAt           string               `json:"started_at,omitempty"`
+	MemMiB              int                  `json:"mem_mib,omitempty"`
+	NumCPU              int                  `json:"num_cpu,omitempty"`
+	ActivityTimeout     string               `json:"activity_timeout,omitempty"`
+	ActivityDiskTimeout string               `json:"activity_disk_timeout,omitempty"`
+	WakeOnNetwork       bool                 `json:"wake_on_network"`
+	NAT                 bool                 `json:"nat,omitempty"`
+	NATGateway          string               `json:"nat_gateway,omitempty"`
+	NATGuestIP          string               `json:"nat_guest_ip,omitempty"`
+	NetworkInterfaces   []NetworkInterface   `json:"network_interfaces,omitempty"`
+	SSHPrivateKey       string               `json:"ssh_private_key,omitempty"`
+	SSHPublicKey        string               `json:"ssh_public_key,omitempty"`
+	SSHUser             string               `json:"ssh_user,omitempty"`
+	LastError           string               `json:"last_error,omitempty"`
 }
 
 // ErrNotFound means the daemon has no VM with the requested uid.
@@ -118,4 +121,9 @@ type Client interface {
 	SetActivity(ctx context.Context, uid string, timeout, diskTimeout time.Duration, wakeOnNetwork bool) error
 	// Ping checks that the daemon socket is reachable.
 	Ping(ctx context.Context) error
+}
+
+// PodNetworkClient is optional so legacy daemon integrations remain usable.
+type PodNetworkClient interface {
+	CheckPodNetworkSupport(ctx context.Context) error
 }

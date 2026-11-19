@@ -45,7 +45,7 @@ func testScheme(t *testing.T) *runtime.Scheme {
 func newAgentEnv(t *testing.T, objs ...client.Object) *agentEnv {
 	t.Helper()
 	s := testScheme(t)
-	c := fake.NewClientBuilder().WithScheme(s).WithStatusSubresource(&vmv1.VirtualMachine{}).WithObjects(objs...).Build()
+	c := fake.NewClientBuilder().WithScheme(s).WithStatusSubresource(&vmv1.VirtualMachine{}, &corev1.Pod{}).WithObjects(objs...).Build()
 	d := kubevm.NewFake()
 	now := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
 	env := &agentEnv{t: t, daemon: d, c: c, clock: &now}
