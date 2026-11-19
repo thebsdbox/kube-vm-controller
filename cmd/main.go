@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"path/filepath"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -37,17 +38,18 @@ func init() {
 
 func main() {
 	var (
-		runScheduler  bool
-		runAgent      bool
-		nodeName      string
-		socket        string
-		leaderElect   bool
-		leaderElectNS string
-		metricsAddr   string
-		probeAddr     string
-		syncPeriod    time.Duration
-		agentNS       string
-		agentSelector string
+		runScheduler    bool
+		runAgent        bool
+		nodeName        string
+		socket          string
+		leaderElect     bool
+		leaderElectNS   string
+		metricsAddr     string
+		probeAddr       string
+		syncPeriod      time.Duration
+		agentNS         string
+		agentSelector   string
+		podNetworkImage string
 	)
 	flag.BoolVar(&runScheduler, "scheduler", false, "Run the scheduler that assigns VirtualMachines to nodes.")
 	flag.BoolVar(&runAgent, "agent", false, "Run the node agent that drives the local kube-vm daemon.")
@@ -60,19 +62,20 @@ func main() {
 	flag.DurationVar(&syncPeriod, "sync-period", 10*time.Second, "How often the agent polls VM state from the kube-vm daemon.")
 	flag.StringVar(&agentNS, "agent-namespace", "kube-vm-system", "Namespace of the agent pods (scheduler only).")
 	flag.StringVar(&agentSelector, "agent-selector", "app.kubernetes.io/component=agent", "Label selector for agent pods (scheduler only).")
+	flag.StringVar(&podNetworkImage, "pod-network-image", os.Getenv("POD_NETWORK_IMAGE"), "Enable experimental IPv4/Cilium-veth Pod networking using this helper image.")
 	opts := zap.Options{Development: false}
 	opts.BindFlags(flag.CommandLine)
 	flag.Parse()
 	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&opts)))
 
-	if err := run(runScheduler, runAgent, nodeName, socket, leaderElect, leaderElectNS, metricsAddr, probeAddr, syncPeriod, agentNS, agentSelector); err != nil {
+	if err := run(runScheduler, runAgent, nodeName, socket, leaderElect, leaderElectNS, metricsAddr, probeAddr, syncPeriod, agentNS, agentSelector, podNetworkImage); err != nil {
 		setupLog.Error(err, "unable to run controller")
 		os.Exit(1)
 	}
 }
 
 func run(runScheduler, runAgent bool, nodeName, socket string, leaderElect bool, leaderElectNS, metricsAddr, probeAddr string,
-	syncPeriod time.Duration, agentNS, agentSelector string) error {
+	syncPeriod time.Duration, agentNS, agentSelector, podNetworkImage string) error {
 	if !runScheduler && !runAgent {
 		return fmt.Errorf("at least one of --scheduler or --agent is required")
 	}
@@ -88,7 +91,7 @@ func run(runScheduler, runAgent bool, nodeName, socket string, leaderElect bool,
 	}
 
 	cacheOpts := cache.Options{}
-	if runScheduler {
+	if runScheduler && !runAgent {
 		// Only the agent pods are needed, not every pod in the cluster.
 		cacheOpts.ByObject = map[client.Object]cache.ByObject{
 			&corev1.Pod{}: {Namespaces: map[string]cache.Config{agentNS: {}}},
@@ -126,6 +129,7 @@ func run(runScheduler, runAgent bool, nodeName, socket string, leaderElect bool,
 		if err := (&controller.AgentReconciler{
 			Client: mgr.GetClient(), Scheme: mgr.GetScheme(), Daemon: daemon,
 			NodeName: nodeName, SyncPeriod: syncPeriod,
+			PodNetworkImage: podNetworkImage, PodNetworkDir: filepath.Join(filepath.Dir(socket), "pod-network"),
 		}).SetupWithManager(mgr); err != nil {
 			return fmt.Errorf("setting up agent: %w", err)
 		}

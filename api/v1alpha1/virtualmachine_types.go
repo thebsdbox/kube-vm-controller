@@ -34,7 +34,7 @@ const (
 )
 
 // NetworkType selects how a guest NIC is attached.
-// +kubebuilder:validation:Enum=NAT;TAP
+// +kubebuilder:validation:Enum=NAT;TAP;Pod
 type NetworkType string
 
 const (
@@ -42,6 +42,8 @@ const (
 	NetworkTypeNAT NetworkType = "NAT"
 	// NetworkTypeTAP attaches to an existing host TAP device.
 	NetworkTypeTAP NetworkType = "TAP"
+	// NetworkTypePod delegates a holder Pod's IPv4 to the guest (experimental).
+	NetworkTypePod NetworkType = "Pod"
 )
 
 // Phase is a coarse summary of the VM lifecycle.
@@ -129,9 +131,10 @@ type Disk struct {
 }
 
 // NetworkInterface attaches one virtio NIC.
-// +kubebuilder:validation:XValidation:rule="self.type == 'TAP' ? has(self.tapName) : !has(self.tapName)",message="tapName is required for TAP and not allowed for NAT"
+// +kubebuilder:validation:XValidation:rule="self.type == 'TAP' ? has(self.tapName) : !has(self.tapName)",message="tapName is required for TAP and only allowed for TAP"
+// +kubebuilder:validation:XValidation:rule="self.type != 'Pod' || (!has(self.mac) && !has(self.switch))",message="Pod networking delegates the CNI MAC and cannot use switch"
 type NetworkInterface struct {
-	// Type selects NAT (kube-vm creates a TAP with host NAT) or TAP (existing device).
+	// Type selects NAT, TAP, or experimental Pod IPv4 delegation.
 	Type NetworkType `json:"type"`
 	// TapName is the host TAP device for type TAP.
 	// +kubebuilder:validation:MaxLength=15
@@ -251,6 +254,7 @@ type ProvisioningSpec struct {
 // +kubebuilder:validation:XValidation:rule="!has(self.provisioning) || (has(self.disks) && self.disks.exists(d, has(d.baseDisk) || has(d.overlay)))",message="provisioning requires a copy-on-write disk (baseDisk or overlay)"
 // +kubebuilder:validation:XValidation:rule="!(has(self.autoCOW) && self.autoCOW) || (has(self.disks) && self.disks.exists(d, has(d.baseDisk) || has(d.path)))",message="autoCOW requires a baseDisk or path disk"
 // +kubebuilder:validation:XValidation:rule="has(self.boot) && (has(self.boot.kernel) || has(self.boot.firmware))",message="boot.kernel or boot.firmware is required"
+// +kubebuilder:validation:XValidation:rule="!has(self.network) || !self.network.exists(n, n.type == 'Pod') || (self.network.size() == 1 && has(self.boot) && has(self.boot.kernel) && has(self.boot.initrd) && !has(self.boot.firmware))",message="experimental Pod networking requires a single NIC, kernel, and kube-vm-init initrd, without firmware"
 type VirtualMachineSpec struct {
 	// NodeName pins the VM to a node running the agent. When unset the scheduler
 	// chooses a node. It is immutable because VM state lives on one host.
@@ -321,7 +325,7 @@ type InterfaceStatus struct {
 	// Name is the host TAP device.
 	// +optional
 	Name string `json:"name,omitempty"`
-	// Type is NAT or TAP.
+	// Type is NAT, TAP, or Pod.
 	// +optional
 	Type NetworkType `json:"type,omitempty"`
 	// MAC is the guest MAC address, when known.
@@ -335,8 +339,23 @@ type InterfaceStatus struct {
 	Gateway string `json:"gateway,omitempty"`
 }
 
+// PodNetworkStatus identifies a holder and its currently prepared CNI allocation.
+type PodNetworkStatus struct {
+	PodName string `json:"podName"`
+	PodUID  string `json:"podUID"`
+	// +optional
+	Generation string `json:"generation,omitempty"`
+	// +optional
+	IPAddress string `json:"ipAddress,omitempty"`
+	// +optional
+	MAC string `json:"mac,omitempty"`
+}
+
 // VirtualMachineStatus is the observed state of a VirtualMachine.
 type VirtualMachineStatus struct {
+	// PodNetwork records the experimental network-holder binding, when allocated.
+	// +optional
+	PodNetwork *PodNetworkStatus `json:"podNetwork,omitempty"`
 	// Phase summarises the lifecycle.
 	// +optional
 	Phase Phase `json:"phase,omitempty"`
@@ -346,7 +365,7 @@ type VirtualMachineStatus struct {
 	// VMID is the identifier of the VM inside the node's kube-vm daemon.
 	// +optional
 	VMID string `json:"vmID,omitempty"`
-	// IPAddress is the first NAT guest address.
+	// IPAddress is the Pod IPv4 for Pod networking, otherwise the first NAT guest address.
 	// +optional
 	IPAddress string `json:"ipAddress,omitempty"`
 	// Interfaces lists attached NICs.

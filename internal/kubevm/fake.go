@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/thebsdbox/kube-vm-controller/internal/podnetwork"
 	"net"
 	"regexp"
 	"sync"
@@ -27,7 +28,8 @@ type Fake struct {
 	// StartErr, when set, makes Start fail with a daemon error.
 	StartErr string
 	// Unavailable simulates an unreachable daemon (transport error).
-	Unavailable bool
+	Unavailable           bool
+	PodNetworkUnsupported bool
 	// StopOnShutdown makes Shutdown move the VM to stopped immediately (default behaviour of New).
 	StopOnShutdown bool
 }
@@ -132,6 +134,20 @@ func (f *Fake) Start(_ context.Context, payload map[string]any) error {
 	}
 	vm.MemMiB = toInt(payload["mem"])
 	vm.NumCPU = toInt(payload["cpu"])
+	if raw, present := payload["pod_network"]; present {
+		data, err := json.Marshal(raw)
+		if err != nil {
+			return err
+		}
+		var id podnetwork.Identity
+		if err := json.Unmarshal(data, &id); err != nil {
+			return err
+		}
+		if id.VMUID == "" || id.PodUID == "" || id.Generation == "" || id.IPAddress == "" {
+			return &DaemonError{Action: ActionStart, Message: "incomplete Pod network identity"}
+		}
+		vm.PodNetwork = &id
+	}
 	if s, ok := payload["activity_timeout"].(string); ok {
 		vm.ActivityTimeout = s
 	}
@@ -308,6 +324,9 @@ func (f *Fake) handle(conn net.Conn) {
 	var err error
 	resp := Response{OK: true, UID: uid}
 	switch req.Action {
+	case "pod-network-support":
+		err = f.CheckPodNetworkSupport(ctx)
+		resp.Message = "v1"
 	case ActionStart:
 		err = f.Start(ctx, req.Payload)
 	case ActionExamine:
@@ -316,6 +335,7 @@ func (f *Fake) handle(conn net.Conn) {
 		if errors.Is(err, ErrNotFound) {
 			err = &DaemonError{Action: req.Action, Message: "vm: instance is not running"}
 		}
+
 		resp.VM = vm
 	case ActionPause:
 		err = f.Pause(ctx, uid)
@@ -351,4 +371,16 @@ func (f *Fake) handle(conn net.Conn) {
 		}
 	}
 	_ = json.NewEncoder(conn).Encode(resp)
+}
+
+func (f *Fake) CheckPodNetworkSupport(context.Context) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.Unavailable {
+		return errUnavailable
+	}
+	if f.PodNetworkUnsupported {
+		return &DaemonError{Action: "pod-network-support", Message: "unsupported"}
+	}
+	return nil
 }

@@ -17,6 +17,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	vmv1 "github.com/thebsdbox/kube-vm-controller/api/v1alpha1"
+	"github.com/thebsdbox/kube-vm-controller/internal/podnetwork"
 )
 
 const (
@@ -145,6 +146,14 @@ func BuildStartPayload(vm *vmv1.VirtualMachine, provision *ProvisionPayload) map
 
 	var nics []map[string]any
 	for _, n := range spec.Network {
+		if n.Type == vmv1.NetworkTypePod {
+			id := podnetwork.Identity{VMUID: string(vm.UID)}
+			if binding := vm.Status.PodNetwork; binding != nil {
+				id.PodUID, id.Generation, id.IPAddress = binding.PodUID, binding.Generation, binding.IPAddress
+			}
+			p["pod_network"] = id
+			continue
+		}
 		nic := map[string]any{"nat": n.Type == vmv1.NetworkTypeNAT}
 		setIf(nic, "tap", n.TapName)
 		setIf(nic, "mac", n.MAC)

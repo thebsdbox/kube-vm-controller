@@ -23,6 +23,7 @@ import (
 
 	vmv1 "github.com/thebsdbox/kube-vm-controller/api/v1alpha1"
 	"github.com/thebsdbox/kube-vm-controller/internal/kubevm"
+	"github.com/thebsdbox/kube-vm-controller/internal/podnetwork"
 )
 
 const (
@@ -49,10 +50,13 @@ const (
 // to match the VirtualMachine objects assigned to its node.
 type AgentReconciler struct {
 	client.Client
-	Scheme   *runtime.Scheme
-	Recorder record.EventRecorder
-	Daemon   kubevm.Client
-	NodeName string
+	Scheme          *runtime.Scheme
+	Recorder        record.EventRecorder
+	Daemon          kubevm.Client
+	NodeName        string
+	PodNetworkImage string
+	PodNetworkDir   string
+	NetworkStatus   func(context.Context, string, podnetwork.Identity) (*podnetwork.Config, error)
 	// SyncPeriod is how often VM state is polled from the daemon.
 	SyncPeriod time.Duration
 	// Now is overridable for tests.
@@ -129,7 +133,7 @@ func (r *AgentReconciler) reconcileDelete(ctx context.Context, vm *vmv1.VirtualM
 	details, err := r.Daemon.Examine(ctx, id)
 	switch {
 	case kubevm.IsNotFound(err):
-		return ctrl.Result{}, r.removeFinalizer(ctx, vm)
+		return r.finishVMDeletion(ctx, vm)
 	case err != nil:
 		r.markDaemonUnavailable(vm, err)
 		if perr := r.patchStatus(ctx, vm, orig); perr != nil {
@@ -152,13 +156,26 @@ func (r *AgentReconciler) reconcileDelete(ctx context.Context, vm *vmv1.VirtualM
 	switch err := r.Daemon.Delete(ctx, id); {
 	case err == nil, kubevm.IsNotFound(err):
 		r.Recorder.Event(vm, corev1.EventTypeNormal, "Deleted", "Virtual machine removed from node "+r.NodeName)
-		return ctrl.Result{}, r.removeFinalizer(ctx, vm)
+		return r.finishVMDeletion(ctx, vm)
 	case kubevm.IsDaemonError(err):
 		// Typically "still stopping"; retry shortly.
 		return ctrl.Result{RequeueAfter: stopPollInterval}, nil
 	default:
 		return ctrl.Result{RequeueAfter: r.syncPeriod()}, nil
 	}
+}
+
+func (r *AgentReconciler) finishVMDeletion(ctx context.Context, vm *vmv1.VirtualMachine) (ctrl.Result, error) {
+	if usesPodNetwork(vm) || vm.Status.PodNetwork != nil {
+		done, err := r.cleanupPodNetwork(ctx, vm)
+		if err != nil {
+			return ctrl.Result{}, err
+		}
+		if !done {
+			return ctrl.Result{RequeueAfter: stopPollInterval}, nil
+		}
+	}
+	return ctrl.Result{}, r.removeFinalizer(ctx, vm)
 }
 
 func (r *AgentReconciler) removeFinalizer(ctx context.Context, vm *vmv1.VirtualMachine) error {
@@ -199,6 +216,40 @@ func (r *AgentReconciler) reconcileVM(ctx context.Context, vm *vmv1.VirtualMachi
 	}
 	if kubevm.IsNotFound(err) {
 		details = nil
+	}
+
+	if (usesPodNetwork(vm) && (!liveVM(details) || details.PodNetwork != nil)) || (details != nil && details.PodNetwork != nil && liveVM(details)) {
+		ready, networkErr := r.reconcilePodNetwork(ctx, vm, details)
+		if networkErr != nil || !ready {
+			message, reason := "Waiting for the Pod CNI allocation and network holder", "NetworkPending"
+			if networkErr != nil {
+				message, reason = networkErr.Error(), "NetworkSetupFailed"
+				vm.Status.LastError = message
+				r.Recorder.Event(vm, corev1.EventTypeWarning, reason, message)
+				if liveVM(details) {
+					if err := r.Daemon.Shutdown(ctx, id); err != nil {
+						return ctrl.Result{}, err
+					}
+				}
+			}
+			if err := r.syncHolderReady(ctx, vm, false); err != nil {
+				return ctrl.Result{}, err
+			}
+			vm.Status.Phase = vmv1.PhaseStarting
+			setCondition(vm, vmv1.ConditionReady, metav1.ConditionFalse, reason, message)
+			if err := r.patchStatus(ctx, vm, orig); err != nil {
+				return ctrl.Result{}, err
+			}
+			return ctrl.Result{RequeueAfter: stopPollInterval}, nil
+		}
+	} else if !usesPodNetwork(vm) && vm.Status.PodNetwork != nil && (!liveVM(details) || details.PodNetwork == nil) {
+		done, err := r.cleanupPodNetwork(ctx, vm)
+		if err != nil {
+			return ctrl.Result{}, err
+		}
+		if !done {
+			return ctrl.Result{RequeueAfter: stopPollInterval}, nil
+		}
 	}
 
 	// A VM that already runs under this id but that this object has no record of is adopted as is.
@@ -253,6 +304,14 @@ func (r *AgentReconciler) reconcileVM(ctx context.Context, vm *vmv1.VirtualMachi
 		}
 	}
 
+	if vm.Status.PodNetwork != nil {
+		ready := lifecycleErr == nil && details != nil && details.PodNetwork != nil &&
+			*details.PodNetwork == bindingIdentity(vm) &&
+			(vm.Status.Phase == vmv1.PhaseRunning || vm.Status.Phase == vmv1.PhaseIdle)
+		if err := r.syncHolderReady(ctx, vm, ready); err != nil {
+			return ctrl.Result{}, err
+		}
+	}
 	if err := r.patchStatus(ctx, vm, orig); err != nil {
 		return ctrl.Result{}, err
 	}
@@ -430,6 +489,14 @@ func (r *AgentReconciler) applyDetails(vm *vmv1.VirtualMachine, d *kubevm.VMDeta
 		}
 		st.Interfaces = append(st.Interfaces, is)
 	}
+	if d.PodNetwork != nil {
+		st.IPAddress = d.PodNetwork.IPAddress
+		mac := ""
+		if st.PodNetwork != nil {
+			mac = st.PodNetwork.MAC
+		}
+		st.Interfaces = append([]vmv1.InterfaceStatus{{Name: "kvmtap0", Type: vmv1.NetworkTypePod, MAC: mac, IPAddress: d.PodNetwork.IPAddress}}, st.Interfaces...)
+	}
 
 	switch st.Phase {
 	case vmv1.PhaseRunning, vmv1.PhaseIdle:
@@ -487,10 +554,13 @@ func (r *AgentReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	if r.Recorder == nil {
 		r.Recorder = mgr.GetEventRecorderFor(AgentControllerName) //nolint:staticcheck
 	}
-	return ctrl.NewControllerManagedBy(mgr).
+	b := ctrl.NewControllerManagedBy(mgr).
 		Named(AgentControllerName).
-		For(&vmv1.VirtualMachine{}, builder.WithPredicates(r.predicate())).
-		Complete(r)
+		For(&vmv1.VirtualMachine{}, builder.WithPredicates(r.predicate()))
+	if r.PodNetworkImage != "" {
+		b = b.Owns(&corev1.Pod{})
+	}
+	return b.Complete(r)
 }
 
 // predicate limits events to VMs on this node and to changes that need action,

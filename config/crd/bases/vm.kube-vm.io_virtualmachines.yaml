@@ -228,18 +228,21 @@ spec:
                       minLength: 1
                       type: string
                     type:
-                      description: Type selects NAT (kube-vm creates a TAP with host
-                        NAT) or TAP (existing device).
+                      description: Type selects NAT, TAP, or experimental Pod IPv4
+                        delegation.
                       enum:
                       - NAT
                       - TAP
+                      - Pod
                       type: string
                   required:
                   - type
                   type: object
                   x-kubernetes-validations:
-                  - message: tapName is required for TAP and not allowed for NAT
+                  - message: tapName is required for TAP and only allowed for TAP
                     rule: 'self.type == ''TAP'' ? has(self.tapName) : !has(self.tapName)'
+                  - message: Pod networking delegates the CNI MAC and cannot use switch
+                    rule: self.type != 'Pod' || (!has(self.mac) && !has(self.switch))
                 maxItems: 8
                 type: array
                 x-kubernetes-list-type: atomic
@@ -436,6 +439,11 @@ spec:
                 has(d.baseDisk) || has(d.path)))'
             - message: boot.kernel or boot.firmware is required
               rule: has(self.boot) && (has(self.boot.kernel) || has(self.boot.firmware))
+            - message: experimental Pod networking requires a single NIC, kernel,
+                and kube-vm-init initrd, without firmware
+              rule: '!has(self.network) || !self.network.exists(n, n.type == ''Pod'')
+                || (self.network.size() == 1 && has(self.boot) && has(self.boot.kernel)
+                && has(self.boot.initrd) && !has(self.boot.firmware))'
           status:
             description: VirtualMachineStatus is the observed state of a VirtualMachine.
             properties:
@@ -517,15 +525,17 @@ spec:
                       description: Name is the host TAP device.
                       type: string
                     type:
-                      description: Type is NAT or TAP.
+                      description: Type is NAT, TAP, or Pod.
                       enum:
                       - NAT
                       - TAP
+                      - Pod
                       type: string
                   type: object
                 type: array
               ipAddress:
-                description: IPAddress is the first NAT guest address.
+                description: IPAddress is the Pod IPv4 for Pod networking, otherwise
+                  the first NAT guest address.
                 type: string
               lastError:
                 description: LastError is the most recent start or daemon error.
@@ -549,6 +559,24 @@ spec:
               phase:
                 description: Phase summarises the lifecycle.
                 type: string
+              podNetwork:
+                description: PodNetwork records the experimental network-holder binding,
+                  when allocated.
+                properties:
+                  generation:
+                    type: string
+                  ipAddress:
+                    type: string
+                  mac:
+                    type: string
+                  podName:
+                    type: string
+                  podUID:
+                    type: string
+                required:
+                - podName
+                - podUID
+                type: object
               sshSecret:
                 description: SSHSecret names the Secret holding the generated SSH
                   key pair.

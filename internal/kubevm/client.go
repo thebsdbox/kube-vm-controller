@@ -147,3 +147,14 @@ func (c *SocketClient) Ping(ctx context.Context) error {
 	_, err := c.do(ctx, ActionList, nil)
 	return err
 }
+
+func (c *SocketClient) CheckPodNetworkSupport(ctx context.Context) error {
+	response, err := c.do(ctx, "pod-network-support", nil)
+	if err != nil {
+		return err
+	}
+	if response.Message != "v1" {
+		return fmt.Errorf("unsupported Pod-network protocol %q", response.Message)
+	}
+	return nil
+}
